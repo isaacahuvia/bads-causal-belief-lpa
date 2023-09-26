@@ -1,0 +1,517 @@
+---
+title: "Beliefs About Depression Study - Causal Belief LPA"
+output: html_document
+date: "2023-07-17"
+---
+
+The primary aim of this study is to assess the relationship between causal beliefs for depression—as operationalized via latent profile analysis—and additional variables of interest. 
+
+- RQ 1: Which latent profiles of causal beliefs for depression best characterize this sample?
+- RQ 2: Are causal beliefs (latent profile membership) associated with demographic characteristics?
+- RQ 3: Are causal beliefs (latent profile membership) associated with psychological outcomes?
+- Exploratory: Do the relationships in RQ 3 differ between those who meet versus do not meet clinical cutoffs for depression?
+
+Pre-registration: https://osf.io/jx3pc
+
+```{r, include = F}
+# Set chunk options
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+```{r}
+# Set seed
+set.seed(47280)
+
+# Load packages
+library(tidyverse)
+library(here)
+library(tidyLPA)
+library(knitr)
+library(kableExtra)
+library(scales)
+
+# Load data
+raw_data <- readRDS(here("Clean Data.rds"))
+imputation_results <- readRDS(here("Imputation Results.rds"))
+
+# Prepare data
+df <- raw_data %>%
+  # Filter to all attention checks passed
+  filter(attention_checks == 5) %>%
+  # Center responses by respondent to get at relative endorsement
+  mutate(temp = rowMeans(select(., starts_with("RFD"))),
+         across(starts_with("RFD"), ~ . - temp)) %>%
+  # Center and scale outcome variables for plots
+  mutate(across(all_of(c("agency", "blame", "function_beliefs", "MHSAS_therapy", "MHSAS_medication", "prognostic_pessimism", "stigma")), scale))
+```
+
+**Methodological Notes**
+
+All data were imputed by missForest. The PFC (proportion falsely classified; equal to the proportion of *categorical* variables that missForest got wrong) was estimated to be `r round(imputation_results["PFC"], 2)`. The NRMSE (normalized root mean squared error; in this case equal to the average error in predictions on the *numeric* variables, expressed in terms of standard deviations) was estimated to be `r round(imputation_results["NRMSE"], 2)`. You can cite the missForest package when you report those statistics:
+
+Stekhoven, D.J. and Buehlmann, P. (2012), ’MissForest - nonparametric missing value imputation for mixed-type data’, Bioinformatics, 28(1) 2012, 112-118, doi: 10.1093/bioinformatics/btr597
+
+All *p*-values were adjusted to set the false discovery rate at .05. You can use this citation:
+
+Benjamini, Y., & Hochberg, Y. (1995). Controlling the false discovery rate: a practical and powerful approach to multiple testing. Journal of the Royal statistical society: series B (Methodological), 57(1), 289-300.
+
+## RQ 1: Which latent profiles of causal beliefs for depression best characterize this sample?
+
+Here's what we pre-registered: We will conduct a latent profile analysis using the ten RFD subscale mean scores as inputs. The latent profile analysis will be conducted using tidyLPA in R. We will assess a variety of latent profile models, with different numbers of profiles, variances set to be equal across groups or allowed to vary across groups, and covariances fixed to zero, set to equal across groups, or allowed to vary across groups. The optimal model will be selected based on examination of model fit statistics (e.g., BIC) and accounting for model parsimony and interpretability. The final model will be selected prior to further analyses (i.e., the decision of which model to use will not depend on the downstream effects of model selection on RQs 2 and 3). 
+
+Results:
+
+We tried a variety of models with different numbers of classes and specifications. Ultimately the best model was one with three classes, variances allowed to be different across groups, and covariances fixed to zero. 
+
+```{r}
+lpa <- df %>%
+  select(starts_with("RFD")) %>%
+  estimate_profiles(3, variances = "varying", covariances = "zero")
+
+df$class <- factor(get_data(lpa)$Class)
+```
+
+### Figure 1. LPA
+
+```{r}
+df %>%
+  pivot_longer(starts_with("RFD")) %>%
+  mutate(name = str_to_title(gsub("RFD_", "", name))) %>%
+  group_by(name, class) %>%
+  summarize(mean = mean(value),
+            sd = sd(value),
+            se = sd / sqrt(n()),
+            lower = mean - (1.96 * se),
+            upper = mean + (1.96 * se),
+            .groups = "drop") %>%
+  ggplot(aes(name, mean, group = class, color = class, linetype = class)) +
+  geom_point() +
+  geom_line() +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = .5) +
+  scale_x_discrete(name = "RFD Subscale") +
+  scale_y_continuous(name = "Mean Relative Endorsement") +
+  scale_color_discrete(name = "Profile") +
+  labs(title = "Latent Profiles of Causal Beliefs",
+       subtitle = "Means and 95% Confidence Intervals",
+       color = "Profile", linetype = "Profile") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+```
+
+## RQ 2: Are causal beliefs (latent profile membership) associated with demographic characteristics?
+
+```{r}
+# Actually going to run all of the omnibus tests up here, 
+# so we can adjust the p-values and report them in the chunks below
+race_data <- df %>%
+  group_by(race_ethnicity) %>%
+  mutate(group_size = n()) %>%
+  filter(group_size >= 25) %>%
+  mutate(new_race = as.character(race_ethnicity))
+
+age_by_class <- summary(aov(data = df, age ~ class))
+gender_by_class <- chisq.test(table(df$gender, df$class))
+race_by_class <- chisq.test(table(race_data$new_race, race_data$class))
+income_by_class <- chisq.test(table(df$family_income, df$class))
+prognostic_pessimism_by_class <- summary(aov(data = df, prognostic_pessimism ~ class))
+blame_by_class <- summary(aov(data = df, blame ~ class))
+agency_by_class <- summary(aov(data = df, agency ~ class))
+stigma_by_class <- summary(aov(data = df, stigma ~ class))
+function_beliefs_by_class <- summary(aov(data = df, function_beliefs ~ class))
+therapy_attitudes_by_class <- summary(aov(data = df, MHSAS_therapy ~ class))
+medication_attitudes_by_class <- summary(aov(data = df, MHSAS_medication ~ class))
+
+p_values <- bind_rows(
+  tibble(test = "age_by_class", p_raw = age_by_class[[1]]["class", "Pr(>F)"]),
+  tibble(test = "gender_by_class", p_raw = gender_by_class$p.value),
+  tibble(test = "race_by_class", p_raw = race_by_class$p.value),
+  tibble(test = "income_by_class", p_raw = income_by_class$p.value),
+  tibble(test = "prognostic_pessimism_by_class", p_raw = prognostic_pessimism_by_class[[1]]["class", "Pr(>F)"]),
+  tibble(test = "blame_by_class", p_raw = blame_by_class[[1]]["class", "Pr(>F)"]),
+  tibble(test = "agency_by_class", p_raw = agency_by_class[[1]]["class", "Pr(>F)"]),
+  tibble(test = "stigma_by_class", p_raw = stigma_by_class[[1]]["class", "Pr(>F)"]),
+  tibble(test = "function_beliefs_by_class", p_raw = function_beliefs_by_class[[1]]["class", "Pr(>F)"]),
+  tibble(test = "therapy_attitudes_by_class", p_raw = therapy_attitudes_by_class[[1]]["class", "Pr(>F)"]),
+  tibble(test = "medication_attitudes_by_class", p_raw = medication_attitudes_by_class[[1]]["class", "Pr(>F)"])
+) %>%
+  mutate(p_adj = p.adjust(p_raw, method = "BH"))
+```
+
+For continuous demographic characteristics (age), we will conduct either a t-test (in the case of two latent profiles) or an ANOVA (in the case of more than two latent profiles) where group membership is the independent variable and the demographic characteristic is the dependent variable.
+
+For categorical demographic characteristics (gender, race/ethnicity, family income), we will use a Chi-square test of independence to determine whether group membership depends on the demographic characteristic.
+
+Results:
+
+**Age.** There was a statistically significant difference in age across classes (F(2, 975) = 3.78, p(adj) = .028). Class 1 (mean = 18.91) was significantly younger than class 3 (mean = 19.16, p(adj) = .036).
+
+```{r}
+# Descriptive statistics
+df %>%
+  group_by(class) %>%
+  summarize(mean = mean(age),
+            se = sd(age) / sqrt(n()),
+            lower_ci = mean - (1.96 * se),
+            upper_ci = mean + (1.96 * se)) %>%
+  kable(digits = 2) %>%
+  kable_styling()
+
+# ANOVA with unadjusted p-value
+age_by_class
+
+# Adjusted p-value
+p_values[p_values$test == "age_by_class",]
+
+# Pairwise t-tests
+pairwise.t.test(x = df$age, g = df$class, p.adjust.method = "BH")
+```
+
+**Gender.** There was a statistically significant difference in gender across classes (X^2(4) = 43.60, p(adj) < .001). Class 3 had a higher proportion of female students (73.73%) than class 1 (63.07%, p(adj) = .002) and class 2 (51.18%, p(adj) < .001). Class 1 had a higher proportion of female students than class 2 (p(adj) = .021). Class 2 had a higher proportion of male students (41.73%) than class 1 (29.59%, p(adj) = .014) and class 3 (15.66%, p(adj) < .001). Class 1 had a higher proportion of male students than class 3 (p(adj) < .001). There were no statistically significant differences in proportion trans/gender diverse students.  
+
+```{r}
+# Descriptive statistics
+df %>%
+  count(class, gender) %>%
+  group_by(class) %>%
+  mutate(pct = 100 * (n / sum(n)),
+         se = sd(pct) / sqrt(n),
+         lower_ci = pct - (1.96 * se),
+         upper_ci = pct + (1.96 * se)) %>%
+  kable(digits = 2) %>%
+  kable_styling()
+
+# Chi-square test with unadjusted p-value
+gender_by_class
+
+# Adjusted p-value
+p_values[p_values$test == "gender_by_class",]
+
+# Pairwise proportion tests
+pairwise.prop.test(table(df$class, df$gender == "Cis Female"), p.adjust.method = "BH")
+pairwise.prop.test(table(df$class, df$gender == "Cis Male"), p.adjust.method = "BH")
+pairwise.prop.test(table(df$class, df$gender == "TGD"), p.adjust.method = "BH")
+```
+
+**Race/Ethnicity.** There were no statistically significant differences in race/ethnicity across classes (X^2(14) = 15.38, p(adj) = .131).
+
+```{r}
+# Descriptive statistics
+race_data %>%
+  count(class, new_race) %>%
+  group_by(class) %>%
+  mutate(pct = 100 * (n / sum(n)),
+         se = sd(pct) / sqrt(n),
+         lower_ci = pct - (1.96 * se),
+         upper_ci = pct + (1.96 * se)) %>%
+  kable(digits = 2) %>%
+  kable_styling()
+
+# Chi-square test with unadjusted p-value
+race_by_class
+
+# Adjusted p-value
+p_values[p_values$test == "race_by_class",]
+```
+
+**Family Income.** There was a statistically significant difference in family income across classes (X^2(2) = 16.92, p(adj) < .001). Class 1 had a significantly higher proportion of students whose family income was above the U.S. median (80.05%) than class 3 (67.95%, p(adj) < .001).
+
+```{r}
+# Descriptive statistics
+df %>%
+  count(class, family_income) %>%
+  group_by(class) %>%
+  mutate(pct = 100 * (n / sum(n)),
+         se = sd(pct) / sqrt(n),
+         lower_ci = pct - (1.96 * se),
+         upper_ci = pct + (1.96 * se)) %>%
+  kable(digits = 2) %>%
+  kable_styling()
+
+# Chi-square test with unadjusted p-value
+income_by_class
+
+# Adjusted p-value
+p_values[p_values$test == "income_by_class",]
+
+# Pairwise proportion tests
+pairwise.prop.test(table(df$class, df$family_income == "Above U.S. Median"), p.adjust.method = "BH")
+```
+
+### Table 1. Demographics Overall and by Profile
+
+```{r}
+demographics_overall <- df %>%
+  pivot_longer(c(gender, race_ethnicity, family_income)) %>%
+  count(name, value) %>%
+  group_by(name) %>%
+  mutate(group = "overall",
+         pct = percent(n / sum(n)))
+
+demographics_by_group <- df %>%
+  mutate(group = as.character(class)) %>%
+  pivot_longer(c(gender, race_ethnicity, family_income)) %>%
+  count(name, group, value) %>%
+  group_by(name, group) %>%
+  mutate(pct = percent(n / sum(n)))
+
+bind_rows(demographics_overall, demographics_by_group) %>%
+  pivot_wider(id_cols = c(name, value), names_from = group, values_from = c(n, pct)) %>%
+  select(name, value, n_overall, pct_overall, n_1, pct_1, n_2, pct_2, n_3, pct_3) %>%
+  kable(col.names = c("Category", "Value", rep(c("n", "pct"), 4))) %>%
+  kable_styling() %>%
+  add_header_above(c(" " = 2, "Overall" = 2, "Profile 1" = 2, "Profile 2" = 2, "Profile 3" = 2))
+
+age_overall <- df %>%
+  summarize(class = "overall", 
+            mean_age = mean(age),
+            sd_age = sd(age))
+
+age_by_group <- df %>%
+  group_by(class) %>%
+  summarize(mean_age = mean(age),
+            sd_age = sd(age)) 
+
+bind_rows(age_overall, age_by_group) %>%
+  mutate(name = "Age") %>%
+  pivot_wider(names_from = class, values_from = c(mean_age, sd_age)) %>%
+  select(name, mean_age_overall, sd_age_overall, mean_age_1, sd_age_1, mean_age_2, sd_age_2, mean_age_3, sd_age_3) %>%
+  kable(col.names = c(" ", rep(c("mean", "sd"), 4))) %>%
+  kable_styling() %>%
+  add_header_above(c(" " = 1, "Overall" = 2, "Profile 1" = 2, "Profile 2" = 2, "Profile 3" = 2))
+```
+
+## RQ 3: How do causal beliefs (latent profile membership) relate to psychological outcomes?
+
+We will conduct either t-tests (in the case of two latent profiles) or ANOVAs (in the case of more than two latent profiles) where group membership is the independent variable and the psychological outcomes are dependent variables. 
+
+Results:
+
+**Prognostic Pessimism.** There was a statistically significant difference in prognostic pessimism across classes (F(2, 975) = 24.89, p(adj) < .001). The mean of prognostic pessimism was significantly higher in class 3 than in class 1 (p(adj) < .001) and class 2 (p(adj) < .001). The mean of prognostic pessimism was significantly higher in class 1 than in class 2 (p(adj) < .001). 
+
+```{r}
+# Descriptive statistics
+df %>%
+  group_by(class) %>%
+  summarize(mean = mean(prognostic_pessimism),
+            se = sd(prognostic_pessimism) / sqrt(n()),
+            lower_ci = mean - (1.96 * se),
+            upper_ci = mean + (1.96 * se)) %>%
+  kable(digits = 2) %>%
+  kable_styling()
+
+# ANOVA with unadjusted p-value
+prognostic_pessimism_by_class
+
+# Adjusted p-value
+p_values[p_values$test == "prognostic_pessimism_by_class",]
+
+# Pairwise t-tests
+pairwise.t.test(x = df$prognostic_pessimism, g = df$class, p.adjust.method = "BH")
+```
+
+**Blame.** There was a statistically significant difference in blame across classes (F(2, 975) = 16.45, p(adj) < .001). The mean of blame was significantly higher in class 1 than in class 2 (p(adj) < .001) and class 3 (p(adj) < .001).
+
+```{r}
+# Descriptive statistics
+df %>%
+  group_by(class) %>%
+  summarize(mean = mean(blame),
+            se = sd(blame) / sqrt(n()),
+            lower_ci = mean - (1.96 * se),
+            upper_ci = mean + (1.96 * se)) %>%
+  kable(digits = 2) %>%
+  kable_styling()
+
+# ANOVA with unadjusted p-value
+blame_by_class
+
+# Adjusted p-value
+p_values[p_values$test == "blame_by_class",]
+
+# Pairwise t-tests
+pairwise.t.test(x = df$blame, g = df$class, p.adjust.method = "BH")
+```
+
+**Agency.** There was a statistically significant difference in agency across classes (F(2, 975) = 4.72, p(adj) = .013). The means of agency in both class 1 (p(adj) = .038) and class 2 (p(adj) = .018) were higher than in class 3. 
+
+```{r}
+# Descriptive statistics
+df %>%
+  group_by(class) %>%
+  summarize(mean = mean(agency),
+            se = sd(agency) / sqrt(n()),
+            lower_ci = mean - (1.96 * se),
+            upper_ci = mean + (1.96 * se)) %>%
+  kable(digits = 2) %>%
+  kable_styling()
+
+# ANOVA with unadjusted p-value
+agency_by_class
+
+# Adjusted p-value
+p_values[p_values$test == "agency_by_class",]
+
+# Pairwise t-tests
+pairwise.t.test(x = df$agency, g = df$class, p.adjust.method = "BH")
+```
+
+**Stigma.** There was a statistically significant difference in stigma across classes (F(2, 975) = 8.652, p(adj) < .001). Stigma was higher for class 2 than for class 1 (p(adj) = .008) and class 3 (p(adj) < .001). Stigma was higher for class 1 than for class 3 (p(adj) = .049).
+
+```{r}
+# Descriptive statistics
+df %>%
+  group_by(class) %>%
+  summarize(mean = mean(stigma),
+            se = sd(stigma) / sqrt(n()),
+            lower_ci = mean - (1.96 * se),
+            upper_ci = mean + (1.96 * se)) %>%
+  kable(digits = 2) %>%
+  kable_styling()
+
+# ANOVA with unadjusted p-value
+stigma_by_class
+
+# Adjusted p-value
+p_values[p_values$test == "stigma_by_class",]
+
+# Pairwise t-tests
+pairwise.t.test(x = df$stigma, g = df$class, p.adjust.method = "BH")
+```
+
+**Function Beliefs.** There was not a statistically significant difference in function beliefs across classes (F(2, 975) = 1.93, p(adj) = .161).
+
+```{r}
+# Descriptive statistics
+df %>%
+  group_by(class) %>%
+  summarize(mean = mean(function_beliefs),
+            se = sd(function_beliefs) / sqrt(n()),
+            lower_ci = mean - (1.96 * se),
+            upper_ci = mean + (1.96 * se)) %>%
+  kable(digits = 2) %>%
+  kable_styling()
+
+# ANOVA with unadjusted p-value
+function_beliefs_by_class
+
+# Adjusted p-value
+p_values[p_values$test == "function_beliefs_by_class",]
+```
+
+**Attitudes Towards Therapy.** There was a statistically significant difference in attitudes towards therapy across classes (F(2, 975) = 8.93, p(adj) < .001). Class 3 had significantly higher scores than class 1 (p(adj) < .001). 
+
+```{r}
+# Descriptive statistics
+df %>%
+  group_by(class) %>%
+  summarize(mean = mean(MHSAS_therapy),
+            se = sd(MHSAS_therapy) / sqrt(n()),
+            lower_ci = mean - (1.96 * se),
+            upper_ci = mean + (1.96 * se)) %>%
+  kable(digits = 2) %>%
+  kable_styling()
+
+# ANOVA with unadjusted p-value
+therapy_attitudes_by_class
+
+# Adjusted p-value
+p_values[p_values$test == "therapy_attitudes_by_class",]
+
+# Pairwise t-tests
+pairwise.t.test(x = df$MHSAS_therapy, g = df$class, p.adjust.method = "BH")
+```
+
+**Attitudes Towards Medication.** There was a statistically significant difference in attitudes towards medication across classes (F(2, 975) = 7.28, p(adj) = .001). Class 3 had significantly higher scores than class 1 (p(adj) = .003) and class 2 (p(adj) = .006).
+
+```{r}
+# Descriptive statistics
+df %>%
+  group_by(class) %>%
+  summarize(mean = mean(MHSAS_medication),
+            se = sd(MHSAS_medication) / sqrt(n()),
+            lower_ci = mean - (1.96 * se),
+            upper_ci = mean + (1.96 * se)) %>%
+  kable(digits = 2) %>%
+  kable_styling()
+
+# ANOVA with unadjusted p-value
+medication_attitudes_by_class
+
+# Adjusted p-value
+p_values[p_values$test == "medication_attitudes_by_class",]
+
+# Pairwise t-tests
+pairwise.t.test(x = df$MHSAS_medication, g = df$class, p.adjust.method = "BH")
+```
+
+### Figure 2. Psychological Outcomes by Profile
+
+```{r}
+df %>%
+  pivot_longer(c("prognostic_pessimism", "blame", "agency", "stigma", "function_beliefs", "MHSAS_therapy", "MHSAS_medication")) %>%
+  mutate(name = recode(
+    name, 
+    "agency" = "Agency",
+    "blame" = "Blame",
+    "function_beliefs" = "Function Beliefs",
+    "MHSAS_medication" = "Medication Beliefs",
+    "MHSAS_therapy" = "Therapy Beliefs",
+    "prognostic_pessimism" = "Prognostic Pessimism",
+    "stigma" = "Stigma"
+  )) %>%
+  group_by(name, class) %>%
+  summarize(mean = mean(value),
+            sd = sd(value),
+            se = sd / sqrt(n()),
+            lower = mean - (1.96 * se),
+            upper = mean + (1.96 * se),
+            .groups = "drop") %>%
+  ggplot(aes(class, mean, fill = class)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = .5) +
+  scale_x_discrete(name = "Profile") +
+  scale_y_continuous(name = "Value") +
+  scale_fill_discrete(name = "Profile") +
+  ggtitle("Psychological Outcomes by Profile", "Z-Score Means and 95% Confidence Intervals") +
+  facet_wrap(. ~ name) +
+  theme_classic()
+```
+
+## Exploratory: Do the relationships in RQ 3 differ between those who meet versus do not meet clinical cutoffs for depression?
+
+This will be assessed via two-way ANOVAs, identical to those in RQ 3 but with depression status as an additional independent variable. In this case, we are interested in the interaction term; the statistic that indicates whether the relationship between profile membership and outcome (RQ 3) depends on depression status. 
+
+```{r}
+summary(aov(data = df, prognostic_pessimism ~ class * PHQ8_cutoff))
+summary(aov(data = df, blame ~ class * PHQ8_cutoff))
+summary(aov(data = df, agency ~ class * PHQ8_cutoff))
+summary(aov(data = df, stigma ~ class * PHQ8_cutoff))
+summary(aov(data = df, function_beliefs ~ class * PHQ8_cutoff))
+summary(aov(data = df, MHSAS_therapy ~ class * PHQ8_cutoff))
+summary(aov(data = df, MHSAS_medication ~ class * PHQ8_cutoff))
+```
+
+Results: There was a statistically significant interaction between class and depression status on prognostic pessimism only.
+
+Across the board, people meeting the clinical cutoff for depression experienced greater prognostic pessimism (p < .001). Prognostic pessimism was also different across classes regardless of depression status (p < .001). There was a significant interaction, where the relationship between class and prognostic pessimism depended on depression status (p = .004). From visual inspection, we can see that prognostic pessimism was especially high among people who met criteria *and* were in class 3. 
+
+### Figure 3. Interaction
+
+```{r}
+df %>%
+  group_by(class, PHQ8_cutoff) %>%
+  summarize(mean = mean(prognostic_pessimism),
+            sd = sd(prognostic_pessimism),
+            se = sd / sqrt(n()),
+            lower = mean - (1.96 * se),
+            upper = mean + (1.96 * se),
+            .groups = "drop") %>%  
+  ggplot(aes(class, mean, group = PHQ8_cutoff, fill = PHQ8_cutoff)) +
+  geom_col(position = "dodge") +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = .5, position = position_dodge(.9)) +
+  scale_x_discrete(name = "Profile") +
+  scale_y_continuous(name = "Prognostic Pessimism") +
+  scale_fill_discrete(name = "Above PHQ-8 Cutoff") +
+  ggtitle("Prognostic Pessimism by Profile and Depression", "Means and 95% Confidence Intervals") +
+  theme_classic()
+```
